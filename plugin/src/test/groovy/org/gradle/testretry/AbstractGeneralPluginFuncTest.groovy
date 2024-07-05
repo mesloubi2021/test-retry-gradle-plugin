@@ -15,6 +15,8 @@
  */
 package org.gradle.testretry
 
+import groovy.transform.NamedVariant
+
 abstract class AbstractGeneralPluginFuncTest extends AbstractPluginFuncTest {
 
     String getLanguagePlugin() {
@@ -22,7 +24,7 @@ abstract class AbstractGeneralPluginFuncTest extends AbstractPluginFuncTest {
     }
 
     protected void successfulTest() {
-        writeTestSource """
+        writeJavaTestSource """
             package acme;
 
             public class SuccessfulTests {
@@ -33,7 +35,7 @@ abstract class AbstractGeneralPluginFuncTest extends AbstractPluginFuncTest {
     }
 
     protected void failedTest() {
-        writeTestSource """
+        writeJavaTestSource """
             package acme;
 
             import static org.junit.Assert.assertTrue;
@@ -48,7 +50,7 @@ abstract class AbstractGeneralPluginFuncTest extends AbstractPluginFuncTest {
     }
 
     protected void flakyTest() {
-        writeTestSource """
+        writeJavaTestSource """
             package acme;
 
             public class FlakyTests {
@@ -58,5 +60,61 @@ abstract class AbstractGeneralPluginFuncTest extends AbstractPluginFuncTest {
                 }
             }
         """
+    }
+
+    enum DslExtensionType {
+
+        DISTRIBUTION{
+            @NamedVariant
+            @Override
+            String getSnippet(String result = 'true', boolean decorated = true, boolean addMethod = true) {
+                """
+                    interface TestDistributionExtension {}
+                    class DefaultTestDistributionExtension implements TestDistributionExtension {
+                        ${addMethod ? """
+                        boolean shouldTestRetryPluginBeDeactivated() {
+                            ${result}
+                        }""" : ""}
+                    }
+                    ${decorated
+                    ? 'test.extensions.create(TestDistributionExtension, "distribution", DefaultTestDistributionExtension)'
+                    : 'test.extensions.add("distribution", new DefaultTestDistributionExtension())'}
+                """
+            }
+        },
+
+        DEVELOCITY{
+            @NamedVariant
+            @Override
+            String getSnippet(String result = 'true', boolean decorated = true, boolean addMethod = true) {
+                assert addMethod: 'not implemented'
+                """
+                    interface DevelocityTestConfiguration {
+                        TestRetryConfiguration getTestRetry();
+                    }
+                    interface TestRetryConfiguration {
+                    }
+                    class DefaultDevelocityTestConfiguration implements DevelocityTestConfiguration {
+                        TestRetryConfiguration testRetry = new DefaultTestRetryConfiguration()
+                    }
+                    class DefaultTestRetryConfiguration implements TestRetryConfiguration {
+                        boolean shouldTestRetryPluginBeDeactivated() {
+                            ${result}
+                        }
+                    }
+                    ${decorated
+                    ? 'test.extensions.create(DevelocityTestConfiguration, "develocity", DefaultDevelocityTestConfiguration)'
+                    : 'test.extensions.add("develocity", new DefaultDevelocityTestConfiguration())'}
+                """
+            }
+        };
+
+        @NamedVariant
+        abstract String getSnippet(String result = 'true', boolean decorated = true, boolean addMethod = true);
+
+        @Override
+        String toString() {
+            name().toLowerCase(Locale.ROOT)
+        }
     }
 }

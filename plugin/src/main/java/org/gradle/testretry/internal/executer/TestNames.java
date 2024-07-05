@@ -32,6 +32,10 @@ public final class TestNames {
         map.computeIfAbsent(className, ignored -> new HashSet<>()).add(testName);
     }
 
+    public void addAll(String className, Set<String> testNames) {
+        map.computeIfAbsent(className, ignored -> new HashSet<>()).addAll(testNames);
+    }
+
     public void addClass(String className) {
         map.put(className, emptySet());
     }
@@ -62,6 +66,11 @@ public final class TestNames {
         }
     }
 
+    public boolean hasClassesWithoutTestNames() {
+        return map.values().stream()
+            .anyMatch(Set::isEmpty);
+    }
+
     public Stream<Map.Entry<String, Set<String>>> stream() {
         return map.entrySet().stream();
     }
@@ -71,6 +80,8 @@ public final class TestNames {
     }
 
     public int size() {
-        return stream().mapToInt(s -> s.getValue().size()).sum();
+        return stream()
+            .mapToInt(s -> Math.max(s.getValue().size(), 1)) // count number of methods, or one if we retry the class
+            .sum();
     }
 }

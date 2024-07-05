@@ -183,6 +183,73 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
         gradleVersion << GRADLE_VERSIONS_UNDER_TEST
     }
 
+    @Issue("https://github.com/gradle/test-retry-gradle-plugin/issues/234")
+    def "handles @Stepwise tests with maxFailures limit (gradle version #gradleVersion)"() {
+        given:
+        buildFile << """
+            test.retry {
+                maxRetries = 1
+                maxFailures = 1
+            }
+        """
+
+        writeGroovyTestSource """
+            package acme
+
+            @spock.lang.Stepwise
+            class StepwiseTests1 extends spock.lang.Specification {
+                def "parentTest"() {
+                    expect:
+                    true
+                }
+
+                def "childTest"() {
+                    expect:
+                    ${flakyAssert('first')}
+                }
+
+                def "grandChildTest"() {
+                    expect:
+                    true
+                }
+            }
+
+            @spock.lang.Stepwise
+            class StepwiseTests2 extends spock.lang.Specification {
+                def "parentTest"() {
+                    expect:
+                    true
+                }
+
+                def "childTest"() {
+                    expect:
+                    ${flakyAssert('second')}
+                }
+
+                def "grandChildTest"() {
+                    expect:
+                    true
+                }
+            }
+        """
+
+        when:
+        def result = gradleRunner(gradleVersion).buildAndFail()
+
+        then:
+        with(result.output) {
+            it.count('childTest FAILED') == 2
+            it.count('childTest PASSED') == 0
+            it.count('parentTest PASSED') == 2
+
+            it.count('grandChildTest SKIPPED') == 2
+            it.count('grandChildTest PASSED') == 0
+        }
+
+        where:
+        gradleVersion << GRADLE_VERSIONS_UNDER_TEST
+    }
+
     def "can rerun on whole class via className (gradle version #gradleVersion)"() {
         given:
         buildFile << """
@@ -245,13 +312,17 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
         gradleVersion << GRADLE_VERSIONS_UNDER_TEST
     }
 
-    def "can rerun on whole class via annotation (gradle version #gradleVersion)"() {
+    def "can rerun on whole class via annotation (gradle version #gradleVersion and retry annotation #retryAnnotation)"() {
         given:
         buildFile << """
+            dependencies {
+                testImplementation 'com.gradle:develocity-testing-annotations:2.0'
+                testImplementation 'com.gradle:gradle-enterprise-testing-annotations:1.1.2'
+            }
             test.retry {
                 maxRetries = 1
                 classRetry {
-                    includeAnnotationClasses.add('*ClassRetry')
+                    includeAnnotationClasses.add('*CustomClassRetry')
                 }
             }
         """
@@ -266,7 +337,7 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
 
             @Target(ElementType.TYPE)
             @Retention(RetentionPolicy.RUNTIME)
-            @interface ClassRetry {
+            @interface CustomClassRetry {
 
             }
         """
@@ -274,7 +345,7 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
         writeGroovyTestSource """
             package acme
 
-            @ClassRetry
+            @$retryAnnotation
             class FlakyTests extends spock.lang.Specification {
                 def "parentTest"() {
                     expect:
@@ -305,7 +376,10 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
         }
 
         where:
-        gradleVersion << GRADLE_VERSIONS_UNDER_TEST
+        [gradleVersion, retryAnnotation] << [
+            GRADLE_VERSIONS_UNDER_TEST,
+            ["acme.CustomClassRetry", "com.gradle.enterprise.testing.annotations.ClassRetry", "com.gradle.develocity.testing.annotations.ClassRetry"]
+        ].combinations()
     }
 
     def "only track a @Retry test method once to ensure it was re-ran successfully"() {
@@ -1126,9 +1200,136 @@ abstract class SpockBaseFuncTest extends AbstractFrameworkFuncTest {
         gradleVersion << GRADLE_VERSIONS_UNDER_TEST
     }
 
-    @Override
-    String testLanguage() {
-        'groovy'
+    def "can retry tests with @Unroll template different from the method name (gradle version #gradleVersion)"() {
+        given:
+        buildFile << """
+            test.retry.maxRetries = 1
+        """
+
+        and:
+        writeGroovyTestSource """
+            package acme
+
+            class UnrollTemplateTest extends spock.lang.Specification {
+
+                @spock.lang.Unroll("test for #a")
+                def customUnroll() {
+                    expect:
+                    ${flakyAssert("customUnroll")}
+
+                    where:
+                    a << [1, 2]
+                }
+                
+
+                def successfulTest() {
+                    expect:
+                    true
+                }
+            }
+        """
+
+        when:
+        def result = gradleRunner(gradleVersion).build()
+
+        then:
+        with(result.output) {
+            it.count('test for 1 FAILED') == 1
+            it.count('test for 1 PASSED') == 1
+            it.count('test for 2 PASSED') == 2
+            it.count('successfulTest PASSED') == (isRerunsParameterizedMethods() ? 1 : 2)
+        }
+
+        where:
+        gradleVersion << GRADLE_VERSIONS_UNDER_TEST
+    }
+
+    def "retries only matching unrolled methods if other methods match the template (gradle version #gradleVersion)"() {
+        given:
+        buildFile << """
+            test.retry.maxRetries = 1
+        """
+
+        and:
+        writeGroovyTestSource """
+            package acme
+
+            class UnrollTemplateTest extends spock.lang.Specification {
+
+                @spock.lang.Unroll("test for #a")
+                def customUnroll() {
+                    expect:
+                    ${flakyAssert("customUnroll")}
+
+                    where:
+                    a << [1, 2]
+                }
+                
+
+                def "test for c"() {
+                    expect:
+                    true
+                }
+            }
+        """
+
+        when:
+        def result = gradleRunner(gradleVersion).build()
+
+        then:
+        with(result.output) {
+            it.count('test for 1 FAILED') == 1
+            it.count('test for 1 PASSED') == 1
+            it.count('test for 2 PASSED') == 2
+            it.count('test for c PASSED') == (isRerunsParameterizedMethods() ? 1 : 2)
+        }
+
+        where:
+        gradleVersion << GRADLE_VERSIONS_UNDER_TEST
+    }
+
+    def "reruns matching unrolled methods if other methods matching the template failed (gradle version #gradleVersion)"() {
+        given:
+        buildFile << """
+            test.retry.maxRetries = 1
+        """
+
+        and:
+        writeGroovyTestSource """
+            package acme
+
+            class UnrollTemplateTest extends spock.lang.Specification {
+
+                @spock.lang.Unroll("test for #a")
+                def customUnroll() {
+                    expect:
+                    true
+
+                    where:
+                    a << [1, 2]
+                }
+                
+
+                def "test for c"() {
+                    expect:
+                    ${flakyAssert("customUnroll")}
+                }
+            }
+        """
+
+        when:
+        def result = gradleRunner(gradleVersion).build()
+
+        then:
+        with(result.output) {
+            it.count('test for 1 PASSED') == 2
+            it.count('test for 2 PASSED') == 2
+            it.count('test for c FAILED') == 1
+            it.count('test for c PASSED') == 1
+        }
+
+        where:
+        gradleVersion << GRADLE_VERSIONS_UNDER_TEST
     }
 
     @Override
